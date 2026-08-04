@@ -276,6 +276,10 @@ app.post('/login', async (req, res) => {
       return res.status(401).json({ message: "Account is not verified! Please verify your OTP first." });
     }
 
+        if (user.is_blocked) {
+      return res.status(403).json({ message: "Your account has been blocked by the administrator." });
+    }
+
     // পাসওয়ার্ড মিললে ও ভেরিফাইড হলে JWT টোকেন তৈরি করা
     const tokenPayload = { id: user.id, email: user.email, role: user.role };
     const jwtSecret = process.env.JWT_SECRET; // এটি একটি গোপন চাবি
@@ -504,6 +508,34 @@ app.put('/profile', authenticateToken, async (req, res) => {
   }
 });
 
+// ১৫. BLOCK/UNBLOCK USER (অ্যাডমিন-অনলি রাউট - ইউজার ব্লক বা আনব্লক করা)
+app.put('/admin/users/:id/block', authenticateToken, isAdmin, async (req, res) => {
+  const userId = parseInt(req.params.id);
+  const { isBlocked } = req.body; // বডি থেকে true অথবা false নেওয়া হচ্ছে
+
+  if (isBlocked === undefined) {
+    return res.status(400).json({ message: "isBlocked status (true/false) is required!" });
+  }
+
+  try {
+    // ডাটাবেসে ইউজারকে ব্লক বা আনব্লক করা
+    const query = "UPDATE users SET is_blocked = $1 WHERE id = $2 RETURNING id, email, role, is_blocked";
+    const result = await pool.query(query, [isBlocked, userId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "User not found!" });
+    }
+
+    const statusMessage = isBlocked ? "blocked" : "unblocked";
+    res.status(200).json({ 
+      message: `User account has been successfully ${statusMessage}!`, 
+      user: result.rows[0] 
+    });
+  } catch (error) {
+    console.error("Block user error:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
 
 
 
