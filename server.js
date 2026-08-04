@@ -44,6 +44,18 @@ const authenticateToken = (req, res, next) => {
 };
 
 
+// ৭.৫ ADMIN CHECK MIDDLEWARE (অ্যাডমিন ভেরিফাই চেকপোস্ট)
+const isAdmin = (req, res, next) => {
+  // req.user এর ভেতরে থাকা রোল চেক করা হচ্ছে
+  if (req.user && req.user.role === 'admin') {
+    next(); // ইউজার অ্যাডমিন হলে ভেতরে যাওয়ার অনুমতি পাবে
+  } else {
+    // অ্যাডমিন না হলে অ্যাক্সেস ব্লক করা
+    res.status(403).json({ message: "Access Denied! Admins only." });
+  }
+};
+
+
 // ১. GET ALL PRODUCTS (PostgreSQL ডাটাবেস থেকে রিড করবে)
 
 app.get('/products', async(req,res) => {
@@ -144,7 +156,7 @@ app.post('/signup', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
     // ডাটাবেসে ইউজার সেভ করা (RETURNING id, email এর অর্থ সেভ হওয়ার পর শুধু আইডি ও ইমেইল ফেরত দিবে, পাসওয়ার্ড দিবে না)
-    const query = "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email";
+    const query = "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, role";
     const values = [email, hashedPassword];
     
     const result = await pool.query(query, values);
@@ -193,7 +205,7 @@ app.post('/login', async (req, res) => {
     }
 
     // পাসওয়ার্ড মিললে JWT টোকেন তৈরি করা
-    const tokenPayload = { id: user.id, email: user.email };
+    const tokenPayload = { id: user.id, email: user.email, role: user.role };
     const jwtSecret = process.env.JWT_SECRET; // এটি একটি গোপন চাবি
     
     // টোকেন তৈরি (যা ১ ঘণ্টার জন্য ভ্যালিড থাকবে)
@@ -342,6 +354,54 @@ app.post('/reset-password/:id/:token', async (req, res) => {
     res.status(500).json({ message: "Internal Server Error" });
   }
 });
+
+
+// ১২. GET ALL USERS (অ্যাডমিন-অনলি রাউট - সব ইউজারের তালিকা দেখা)
+app.get('/admin/users', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    // পাসওয়ার্ড ছাড়া অন্য সব কলামের ডাটা নিয়ে আসা হচ্ছে
+    const result = await pool.query("SELECT id, email, role, name, phone FROM users ORDER BY id ASC");
+    res.status(200).json(result.rows);
+  } catch (error) {
+    console.error("Admin query error:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+
+
+// ১৩. UPDATE USER ROLE (অ্যাডমিন-অনলি রাউট - ইউজারের রোল পরিবর্তন করা)
+app.put('/admin/users/:id/role', authenticateToken, isAdmin, async (req, res) => {
+  const userId = parseInt(req.params.id);
+  const { role } = req.body; // নতুন রোল (যেমন: 'admin' বা 'customer')
+
+  if (!role) {
+    return res.status(400).json({ message: "Role is required!" });
+  }
+
+  // নিরাপত্তা ভ্যালিডেশন (রোলটি কেবল 'admin' বা 'customer' হতে পারবে)
+  if (role !== 'admin' && role !== 'customer') {
+    return res.status(400).json({ message: "Invalid role! Must be 'admin' or 'customer'." });
+  }
+
+  try {
+    // ডাটাবেসে ইউজারের রোল আপডেট করা
+    const query = "UPDATE users SET role = $1 WHERE id = $2 RETURNING id, email, role";
+    const result = await pool.query(query, [role, userId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "User not found!" });
+    }
+
+    res.status(200).json({ 
+      message: "User role updated successfully!", 
+      user: result.rows[0] 
+    });
+  } catch (error) {
+    console.error("Role update error:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+
 
 
 
