@@ -538,6 +538,57 @@ app.put('/admin/users/:id/block', authenticateToken, isAdmin, async (req, res) =
 });
 
 
+// ১৬. DELETE OWN ACCOUNT (ইউজার নিজে নিজের অ্যাকাউন্ট ডিলিট করা - সুরক্ষিত রাউট)
+app.delete('/profile', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id; // টোকেন থেকে নিজের সুরক্ষিত আইডি নেওয়া হচ্ছে
+
+    // ডাটাবেস থেকে ইউজার ডিলিট করা
+    const query = "DELETE FROM users WHERE id = $1 RETURNING id, email";
+    const result = await pool.query(query, [userId]);
+
+    res.status(200).json({ 
+      message: "Your account has been deleted successfully!", 
+      deletedUser: result.rows[0] 
+    });
+  } catch (error) {
+    console.error("Delete account error:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+
+
+
+// ১৭. ADMIN DELETE USER (অ্যাডমিন যেকোনো ইউজার ডিলিট করা - অ্যাডমিন-অনলি রাউট)
+app.delete('/admin/users/:id', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const userIdToDelete = parseInt(req.params.id); // ইউআরএল থেকে ডিলিট করার আইডি নেওয়া হচ্ছে
+
+    // অ্যাডমিন যেন নিজেকে নিজে এই এপিআই দিয়ে ডিলিট না করতে পারে তার জন্য চেক করা
+    if (userIdToDelete === req.user.id) {
+      return res.status(400).json({ message: "Admins cannot delete themselves!" });
+    }
+
+    // ডাটাবেস থেকে ইউজার ডিলিট করা
+    const query = "DELETE FROM users WHERE id = $1 RETURNING id, email, role";
+    const result = await pool.query(query, [userIdToDelete]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "User not found!" });
+    }
+
+    res.status(200).json({ 
+      message: "User account has been deleted successfully by admin!", 
+      deletedUser: result.rows[0] 
+    });
+  } catch (error) {
+    console.error("Admin delete user error:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+
+
+
 
 app.get("/", (req,res)=>{
   res.send("server started successful");
