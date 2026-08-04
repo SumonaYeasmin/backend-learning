@@ -141,7 +141,7 @@ app.delete('/products/:id', async (req, res) => {
 
 
 
-// ৫. USER SIGN UP (রেজিস্ট্রেশন)
+// ৫. USER SIGN UP (রেজিস্ট্রেশন - ওটিপি সহ)
 app.post('/signup', async (req, res) => {
   const { email, password } = req.body;
 
@@ -151,28 +151,92 @@ app.post('/signup', async (req, res) => {
   }
 
   try {
-    // পাসওয়ার্ড হ্যাশ (Hash) করা হচ্ছে যেন হ্যাকার ডাটাবেস হ্যাক করলেও পাসওয়ার্ড না বুঝতে পারে
+    // পাসওয়ার্ড হ্যাশ (Hash) করা হচ্ছে
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    // ডাটাবেসে ইউজার সেভ করা (RETURNING id, email এর অর্থ সেভ হওয়ার পর শুধু আইডি ও ইমেইল ফেরত দিবে, পাসওয়ার্ড দিবে না)
-    const query = "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, role";
-    const values = [email, hashedPassword];
+    // ৬ ডিজিটের র্যান্ডম ওটিপি তৈরি করা
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    
+    // ওটিপির মেয়াদ ৫ মিনিট সেট করা হচ্ছে
+    const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+    // ডাটাবেসে ইউজার সেভ করা (ওটিপি এবং মেয়াদের সময়সহ)
+    const query = `
+      INSERT INTO users (email, password, verification_otp, otp_expires_at) 
+      VALUES ($1, $2, $3, $4) 
+      RETURNING id, email, role, is_verified
+    `;
+    const values = [email, hashedPassword, otp, otpExpiresAt];
     
     const result = await pool.query(query, values);
 
+    // ওটিপি ইমেইল সিমুলেশন (কনসোলে প্রিন্ট করা)
+    console.log(`\n📬 [EMAIL SIMULATION] Verification OTP for user ${email}: ${otp}\n`);
+
     res.status(201).json({ 
-      message: "User registered successfully!", 
+      message: "Registration successful! Please verify your account using the OTP sent to your email.", 
       user: result.rows[0] 
     });
   } catch (error) {
     console.error("Signup error:", error);
     
-    // Postgres-এ ইউনিক এরর কোড '23505' (ইমেইলটি ডাটাবেসে আগে থেকেই থাকলে)
     if (error.code === '23505') {
       return res.status(400).json({ message: "Email already exists!" });
     }
     res.status(500).json({ message: "Failed to register user" });
+  }
+});
+
+// ৫.৫ VERIFY OTP (ওটিপি ভেরিফাই করা - আনপ্রোটেক্টেড রাউট)
+app.post('/verify-otp', async (req, res) => {
+  const { email, otp } = req.body;
+
+  if (!email || !otp) {
+    return res.status(400).json({ message: "Email and OTP are required!" });
+  }
+
+  try {
+    // ইমেইল অনুযায়ী ইউজার খুঁজে বের করা
+    const query = "SELECT * FROM users WHERE email = $1";
+    const result = await pool.query(query, [email]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "User not found!" });
+    }
+
+    const user = result.rows[0];
+
+    // ডাটাবেসে ওটিপি আছে কি না এবং ইউজারের পাঠানো ওটিপির সাথে মিলে কি না চেক করা
+    if (!user.verification_otp || user.verification_otp !== otp) {
+      return res.status(400).json({ message: "Invalid OTP!" });
+    }
+
+    // ওটিপির মেয়াদ শেষ হয়ে গেছে কি না চেক করা (৫ মিনিট পার হয়েছে কি না)
+    const currentTime = new Date();
+    const otpExpiryTime = new Date(user.otp_expires_at);
+
+    if (currentTime > otpExpiryTime) {
+      return res.status(400).json({ message: "OTP has expired!" });
+    }
+
+    // ওটিপি সঠিক এবং মেয়াদ থাকলে ইউজারকে ভেরিফাইড (is_verified = true) করা 
+    // এবং ডাটাবেস থেকে ওটিপি ও মেয়াদের মান মুছে ফেলা (NULL করে দেওয়া)
+    const updateQuery = `
+      UPDATE users 
+      SET is_verified = true, verification_otp = NULL, otp_expires_at = NULL 
+      WHERE id = $1 
+      RETURNING id, email, is_verified
+    `;
+    const updateResult = await pool.query(updateQuery, [user.id]);
+
+    res.status(200).json({ 
+      message: "Account verified successfully! You can now login.", 
+      user: updateResult.rows[0] 
+    });
+  } catch (error) {
+    console.error("OTP verification error:", error);
+    res.status(500).json({ message: "Internal Server Error" });
   }
 });
 
@@ -184,6 +248,9 @@ app.post('/login', async (req, res) => {
   if (!email || !password) {
     return res.status(400).json({ message: "Email and password are required!" });
   }
+
+
+
 
   try {
     // ইমেইল অনুযায়ী ডাটাবেস থেকে ইউজার খুঁজে বের করা
@@ -203,8 +270,13 @@ app.post('/login', async (req, res) => {
     if (!isPasswordValid) {
       return res.status(400).json({ message: "Invalid email or password!" });
     }
+    
+    // ইউজার অ্যাকাউন্ট ওটিপি দিয়ে ভেরিফাই করেছে কি না চেক করা
+    if (!user.is_verified) {
+      return res.status(401).json({ message: "Account is not verified! Please verify your OTP first." });
+    }
 
-    // পাসওয়ার্ড মিললে JWT টোকেন তৈরি করা
+    // পাসওয়ার্ড মিললে ও ভেরিফাইড হলে JWT টোকেন তৈরি করা
     const tokenPayload = { id: user.id, email: user.email, role: user.role };
     const jwtSecret = process.env.JWT_SECRET; // এটি একটি গোপন চাবি
     
@@ -398,6 +470,36 @@ app.put('/admin/users/:id/role', authenticateToken, isAdmin, async (req, res) =>
     });
   } catch (error) {
     console.error("Role update error:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+
+
+// ১৪. UPDATE PROFILE (প্রোফাইল আপডেট - সুরক্ষিত রাউট)
+app.put('/profile', authenticateToken, async (req, res) => {
+  const { name, phone } = req.body;
+
+  try {
+    const userId = req.user.id; // টোকেন থেকে সুরক্ষিত আইডি নেওয়া হচ্ছে
+
+    // ডাটাবেস থেকে ইউজারের বর্তমান তথ্য তুলে আনা (যেন নতুন ডাটা না দিলে আগের ডাটাই থাকে)
+    const userQuery = await pool.query("SELECT * FROM users WHERE id = $1", [userId]);
+    const user = userQuery.rows[0];
+
+    // নাম বা ফোন না পাঠালে আগের তথ্যই বহাল থাকবে (Fallback)
+    const updatedName = name || user.name;
+    const updatedPhone = phone || user.phone;
+
+    // ডাটাবেসে নাম ও ফোন আপডেট করা (RETURNING এর মাধ্যমে আপডেট করা প্রোফাইলটি ফেরত পাঠানো)
+    const updateQuery = "UPDATE users SET name = $1, phone = $2 WHERE id = $3 RETURNING id, email, name, phone, role";
+    const result = await pool.query(updateQuery, [updatedName, updatedPhone, userId]);
+
+    res.status(200).json({ 
+      message: "Profile updated successfully!", 
+      user: result.rows[0] 
+    });
+  } catch (error) {
+    console.error("Profile update error:", error);
     res.status(500).json({ message: "Internal Server Error" });
   }
 });
